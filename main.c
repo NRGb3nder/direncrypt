@@ -14,7 +14,7 @@
 #include "pthread_routines.h"
 
 #define MIN_VALID_ARGC 5
-#define MIN_RUNNING_THREADS 2
+#define MIN_RUNNING_THREADS 1
 #define CHAR_BUF_SIZE 256
 
 struct mapconf_t
@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (!(max_running_threads = strtol(argv[4], NULL, 10))) {
-        printerr(module, "Maximum of running threads is not an integer", NULL);
+        printerr(module, "Maximum of running encrypting threads is not an integer", NULL);
         return 1;
     }
     if (errno == ERANGE) {
@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
     }
     if (max_running_threads < MIN_RUNNING_THREADS) {
         char errmsg[CHAR_BUF_SIZE];
-        sprintf(errmsg, "Maximum of running threads must be greater or equal to %d",
+        sprintf(errmsg, "Maximum of running encrypting threads must be greater or equal to %d",
             MIN_RUNNING_THREADS);
 
         printerr(module, errmsg, NULL);
