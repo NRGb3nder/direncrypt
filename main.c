@@ -16,6 +16,7 @@
 #define MIN_VALID_ARGC 5
 #define MIN_RUNNING_THREADS 1
 #define CHAR_BUF_SIZE 256
+#define BLOCK_SIZE 512
 
 struct mapconf_t
 {
@@ -209,14 +210,16 @@ void *encryption_worker(void *args)
         goto free_thread;
     }
 
-    uint8_t block;
+    uint8_t block[BLOCK_SIZE];
     long long keypos = 0;
     ssize_t rdbytes;
     bool is_rdwrerror = false;
-    while (!is_rdwrerror && (rdbytes = read(source_fd, &block, sizeof(block)))) {
+    while (!is_rdwrerror && (rdbytes = read(source_fd, block, BLOCK_SIZE))) {
         if (rdbytes != -1) {
-            block = block ^ get_key_byte(params->map, &keypos);
-            if (write(dest_fd, &block, sizeof(block)) == -1) {
+            for (int i = 0; i < rdbytes; i++) {
+                block[i] = block[i] ^ get_key_byte(params->map, &keypos);
+            }
+            if (write(dest_fd, block, (size_t) rdbytes) == -1) {
                 printerr(module, strerror(errno), params->ciphertext_filepath);
                 is_rdwrerror = true;
             }
