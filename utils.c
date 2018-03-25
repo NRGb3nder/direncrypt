@@ -71,5 +71,5 @@ void create_filepath(char *dest, const char *path, const char *name)
 
 void report_thread_status(const char *filepath, size_t ciphered_bytes)
 {
-    printf("I am %ld, have processed %s and encrypted %zu bytes\n", syscall(SYS_gettid), filepath, ciphered_bytes);
+    printf("I am %ld, have processed %zu bytes in %s\n", syscall(SYS_gettid), ciphered_bytes, filepath);
 }
