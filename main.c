@@ -212,22 +212,28 @@ void *encryption_worker(void *args)
 
     uint8_t block[BLOCK_SIZE];
     long long keypos = 0;
+    size_t bytes_processed = 0;
     ssize_t rdbytes;
+    ssize_t wrbytes;
     bool is_rdwrerror = false;
     while (!is_rdwrerror && (rdbytes = read(source_fd, block, BLOCK_SIZE))) {
         if (rdbytes != -1) {
             for (int i = 0; i < rdbytes; i++) {
                 block[i] = block[i] ^ get_key_byte(params->map, &keypos);
             }
-            if (write(dest_fd, block, (size_t) rdbytes) == -1) {
+            if (wrbytes = write(dest_fd, block, (size_t) rdbytes), wrbytes == -1) {
                 printerr(module, strerror(errno), params->ciphertext_filepath);
                 is_rdwrerror = true;
+            } else {
+                bytes_processed += wrbytes;
             }
         } else {
             printerr(module, strerror(errno), params->plaintext_filepath);
             is_rdwrerror = true;
         }
     }
+
+    report_thread_status(params->plaintext_filepath, bytes_processed);
 
 free_thread:
     /* Dobby is free! */
