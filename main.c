@@ -14,7 +14,7 @@
 #include "pthread_routines.h"
 
 #define MIN_VALID_ARGC 5
-#define MIN_RUNNING_THREADS 1
+#define MIN_POOL_SIZE 1
 #define CHAR_BUF_SIZE 256
 #define BLOCK_SIZE 512
 
@@ -33,12 +33,13 @@ struct encrypter_params_t
 };
 
 char *module;
-struct tconf_t *threads;
+struct tconf_t *thread_pool;
 
 int create_key_map(const char *key_filename, struct mapconf_t *map);
 int destroy_key_map(struct mapconf_t *map);
+void join_pool_threads(struct tconf_t *pool, long pool_size);
 int encrypt_files(const char *dirpath, int depth, const char *ciphertext_dirpath,
-    struct mapconf_t *key_map, long max_running_threads);
+    struct mapconf_t *key_map, long pool_size);
 void *encryption_worker(void *args);
 uint8_t get_key_byte(struct mapconf_t *map, long long *pos);
 
@@ -58,8 +59,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    long max_running_threads;
-    if (!(max_running_threads = strtol(argv[4], NULL, 10))) {
+    long pool_size;
+    if (!(pool_size = strtol(argv[4], NULL, 10))) {
         printerr(module, "Maximum of running encrypting threads is not an integer", NULL);
         return 1;
     }
@@ -67,10 +68,10 @@ int main(int argc, char *argv[]) {
         printerr(module, strerror(errno), NULL);
         return 1;
     }
-    if (max_running_threads < MIN_RUNNING_THREADS) {
+    if (pool_size < MIN_POOL_SIZE) {
         char errmsg[CHAR_BUF_SIZE];
         sprintf(errmsg, "Maximum of running encrypting threads must be greater or equal to %d",
-            MIN_RUNNING_THREADS);
+            MIN_POOL_SIZE);
 
         printerr(module, errmsg, NULL);
         return 1;
@@ -86,9 +87,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    threads = malloc(max_running_threads * sizeof(struct tconf_t));
-    for (long i = 0; i < max_running_threads; i++) {
-        threads[i].thread_status = ST_NULL;
+    thread_pool = malloc(pool_size * sizeof(struct tconf_t));
+    for (long i = 0; i < pool_size; i++) {
+        thread_pool[i].thread_status = ST_NULL;
     }
 
     struct mapconf_t key_map;
@@ -96,10 +97,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int result = encrypt_files(argv[1], 1, argv[2], &key_map, max_running_threads);
-    while (!are_finished_threads(threads, max_running_threads)) {
+    int result = encrypt_files(argv[1], 1, argv[2], &key_map, pool_size);
+    while (!are_finished_threads(thread_pool, pool_size)) {
         /* block */
     }
+    join_pool_threads(thread_pool, pool_size);
 
     destroy_key_map(&key_map);
 
@@ -139,8 +141,18 @@ int destroy_key_map(struct mapconf_t *map)
     return 0;
 }
 
+void join_pool_threads(struct tconf_t *pool, long pool_size)
+{
+    for (long i = 0; i < pool_size; i++) {
+        pool[i].thread_status = ST_NULL;
+        if (pthread_join(pool[i].thread_id, NULL) == -1) {
+            printerr(module, strerror(errno), "pthread_join");
+        }
+    }
+}
+
 int encrypt_files(const char *plaintext_dirpath, int depth, const char *ciphertext_dirpath,
-    struct mapconf_t *key_map, long max_running_threads)
+    struct mapconf_t *key_map, long pool_size)
 {
     DIR *currdir;
     if (!(currdir = opendir(plaintext_dirpath))) {
@@ -159,32 +171,40 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
         if (depth && isdir(explored_path)) {
             char new_ciphertext_dirpath[PATH_MAX];
             create_filepath(new_ciphertext_dirpath, ciphertext_dirpath, cdirent->d_name);
-            encrypt_files(explored_path, depth - 1, new_ciphertext_dirpath, key_map, max_running_threads);
+            encrypt_files(explored_path, depth - 1, new_ciphertext_dirpath, key_map, pool_size);
         } else if (isreg(explored_path)) {
-            long tindex = wait_for_thread(threads, max_running_threads);
-            enum tstatus_t last_status = threads[tindex].thread_status;
-            threads[tindex].thread_status = ST_NULL;
-            if (last_status != ST_NULL) {
-                if (pthread_join(threads[tindex].thread_id, NULL) == -1) {
-                    printerr(module, strerror(errno), "pthread_join");
-                    return 1;
-                }
-            }
             char ciphertext_filepath[PATH_MAX];
             create_filepath(ciphertext_filepath, ciphertext_dirpath, cdirent->d_name);
 
-            struct encrypter_params_t *params = malloc(sizeof(struct encrypter_params_t));
-            realpath(explored_path, params->plaintext_filepath);
-            realpath(ciphertext_filepath, params->ciphertext_filepath);
-            params->map = key_map;
-            params->thread_status = &threads[tindex].thread_status;
+            long tindex = wait_for_thread(thread_pool, pool_size);
+            enum tstatus_t last_status = thread_pool[tindex].thread_status;
 
-            if (pthread_create(&threads[tindex].thread_id, NULL, &encryption_worker, params) == -1) {
-                printerr(module, strerror(errno), "pthread_create");
-                free(params);
-                return 1;
+            struct encrypter_params_t *params;
+            if (last_status == ST_NULL) {
+                params = malloc(sizeof(struct encrypter_params_t));
+                realpath(explored_path, params->plaintext_filepath);
+                realpath(ciphertext_filepath, params->ciphertext_filepath);
+                params->map = key_map;
+                params->thread_status = &thread_pool[tindex].thread_status;
+                thread_pool[tindex].args = (void *) params;
+
+                if (pthread_create(&thread_pool[tindex].thread_id, NULL, &encryption_worker, params) == -1) {
+                    printerr(module, strerror(errno), "pthread_create");
+                    free(params);
+                    return 1;
+                }
+                while (thread_pool[tindex].thread_status == ST_NULL) {
+                    /* block */
+                }
+            } else {
+                params = (struct encrypter_params_t *) thread_pool[tindex].args;
+                realpath(explored_path, params->plaintext_filepath);
+                realpath(ciphertext_filepath, params->ciphertext_filepath);
+                thread_pool[tindex].thread_status = ST_REFRESHED;
+                while (thread_pool[tindex].thread_status == ST_REFRESHED) {
+                    /* block */
+                }
             }
-            threads[tindex].thread_status = ST_BUSY;
         }
     }
 
@@ -198,51 +218,53 @@ void *encryption_worker(void *args)
 {
     struct encrypter_params_t *params = (struct encrypter_params_t *) args;
 
-    int source_fd;
-    if (source_fd = open(params->plaintext_filepath, O_RDONLY), source_fd == -1) {
-        printerr(module, strerror(errno), params->plaintext_filepath);
-        goto free_thread;
-    }
-
-    int dest_fd;
-    if (dest_fd = open(params->ciphertext_filepath, O_CREAT | O_WRONLY, 0777), dest_fd == -1) {
-        printerr(module, strerror(errno), params->ciphertext_filepath);
-        goto free_thread;
-    }
-
-    uint8_t block[BLOCK_SIZE];
-    long long keypos = 0;
-    size_t bytes_processed = 0;
-    ssize_t rdbytes;
-    ssize_t wrbytes;
-    bool is_rdwrerror = false;
-    while (!is_rdwrerror && (rdbytes = read(source_fd, block, BLOCK_SIZE))) {
-        if (rdbytes != -1) {
-            for (int i = 0; i < rdbytes; i++) {
-                block[i] = block[i] ^ get_key_byte(params->map, &keypos);
-            }
-            if (wrbytes = write(dest_fd, block, (size_t) rdbytes), wrbytes == -1) {
-                printerr(module, strerror(errno), params->ciphertext_filepath);
-                is_rdwrerror = true;
-            } else {
-                bytes_processed += wrbytes;
-            }
-        } else {
+    do {
+        *params->thread_status = ST_BUSY;
+        int source_fd;
+        if (source_fd = open(params->plaintext_filepath, O_RDONLY), source_fd == -1) {
             printerr(module, strerror(errno), params->plaintext_filepath);
-            is_rdwrerror = true;
+            goto free_thread;
         }
-    }
 
-    report_thread_status(params->plaintext_filepath, bytes_processed);
+        int dest_fd;
+        if (dest_fd = open(params->ciphertext_filepath, O_CREAT | O_WRONLY, 0777), dest_fd == -1) {
+            printerr(module, strerror(errno), params->ciphertext_filepath);
+            goto free_thread;
+        }
 
-free_thread:
-    /* Dobby is free! */
-    *params->thread_status = ST_FREE;
-    while (*params->thread_status != ST_NULL) {
-        /* block */
-    }
+        uint8_t block[BLOCK_SIZE];
+        long long keypos = 0;
+        size_t bytes_processed = 0;
+        ssize_t rdbytes;
+        ssize_t wrbytes;
+        bool is_rdwrerror = false;
+        while (!is_rdwrerror && (rdbytes = read(source_fd, block, BLOCK_SIZE))) {
+            if (rdbytes != -1) {
+                for (int i = 0; i < rdbytes; i++) {
+                    block[i] = block[i] ^ get_key_byte(params->map, &keypos);
+                }
+                if (wrbytes = write(dest_fd, block, (size_t) rdbytes), wrbytes == -1) {
+                    printerr(module, strerror(errno), params->ciphertext_filepath);
+                    is_rdwrerror = true;
+                } else {
+                    bytes_processed += wrbytes;
+                }
+            } else {
+                printerr(module, strerror(errno), params->plaintext_filepath);
+                is_rdwrerror = true;
+            }
+        }
+
+        report_thread_status(params->plaintext_filepath, bytes_processed);
+
+        free_thread:
+        *params->thread_status = ST_FREE;
+        while (*params->thread_status == ST_FREE) {
+            /* block */
+        }
+    } while (*params->thread_status == ST_REFRESHED);
+
     free(params);
-
     return NULL;
 }
 
