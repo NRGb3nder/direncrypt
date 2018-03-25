@@ -1,6 +1,8 @@
 #ifndef DIRENCRYPT_UTILS_H
 #define DIRENCRYPT_UTILS_H
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
