@@ -32,7 +32,6 @@ struct encrypter_params_t
 };
 
 char *module;
-long max_running_threads;
 struct tconf_t *threads;
 
 int create_key_map(const char *key_filename, struct mapconf_t *map);
@@ -58,6 +57,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    long max_running_threads;
     if (!(max_running_threads = strtol(argv[4], NULL, 10))) {
         printerr(module, "Maximum of running encrypting threads is not an integer", NULL);
         return 1;
