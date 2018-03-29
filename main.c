@@ -103,6 +103,8 @@ int main(int argc, char *argv[]) {
     }
     join_pool_threads(thread_pool, pool_size);
 
+    free(thread_pool);
+
     destroy_key_map(&key_map);
 
     return result;
@@ -160,6 +162,8 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
         return 1;
     }
 
+    bool is_error = false;
+
     struct dirent *cdirent;
     while (cdirent = readdir(currdir)) {
         if (!strcmp(".", cdirent->d_name) || !strcmp("..", cdirent->d_name)) {
@@ -171,6 +175,13 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
         if (depth && isdir(explored_path)) {
             char new_ciphertext_dirpath[PATH_MAX];
             create_filepath(new_ciphertext_dirpath, ciphertext_dirpath, cdirent->d_name);
+
+            if (mkdir(new_ciphertext_dirpath, 0777) == -1) {
+                printerr(module, strerror(errno), new_ciphertext_dirpath);
+                is_error = true;
+                goto finish_encryption;
+            }
+
             encrypt_files(explored_path, depth - 1, new_ciphertext_dirpath, key_map, pool_size);
         } else if (isreg(explored_path)) {
             char ciphertext_filepath[PATH_MAX];
@@ -191,7 +202,8 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
                 if (pthread_create(&thread_pool[tindex].thread_id, NULL, &encryption_worker, params) == -1) {
                     printerr(module, strerror(errno), "pthread_create");
                     free(params);
-                    return 1;
+                    is_error = true;
+                    goto finish_encryption;
                 }
                 while (thread_pool[tindex].thread_status == ST_NULL) {
                     /* block */
@@ -208,10 +220,11 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
         }
     }
 
+    finish_encryption:
     if (closedir(currdir) == -1) {
         printerr(module, strerror(errno), plaintext_dirpath);
     }
-    return 0;
+    return is_error;
 }
 
 void *encryption_worker(void *args)
@@ -223,13 +236,13 @@ void *encryption_worker(void *args)
         int source_fd;
         if (source_fd = open(params->plaintext_filepath, O_RDONLY), source_fd == -1) {
             printerr(module, strerror(errno), params->plaintext_filepath);
-            goto free_thread;
+            goto finish_work;
         }
 
         int dest_fd;
         if (dest_fd = open(params->ciphertext_filepath, O_CREAT | O_WRONLY, 0777), dest_fd == -1) {
             printerr(module, strerror(errno), params->ciphertext_filepath);
-            goto free_thread;
+            goto finish_work;
         }
 
         uint8_t block[BLOCK_SIZE];
@@ -257,7 +270,7 @@ void *encryption_worker(void *args)
 
         report_thread_status(params->plaintext_filepath, bytes_processed);
 
-        free_thread:
+        finish_work:
         *params->thread_status = ST_FREE;
         while (*params->thread_status == ST_FREE) {
             /* block */
