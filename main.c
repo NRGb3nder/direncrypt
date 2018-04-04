@@ -221,9 +221,7 @@ int encrypt_files(const char *plaintext_dirpath, int depth, const char *cipherte
     }
 
     finish_encryption:
-    if (closedir(currdir) == -1) {
-        printerr(module, strerror(errno), plaintext_dirpath);
-    }
+    closedir(currdir);
     return is_error;
 }
 
